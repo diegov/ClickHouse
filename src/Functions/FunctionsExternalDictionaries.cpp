@@ -8,6 +8,7 @@ namespace DB
 void registerFunctionsExternalDictionaries(FunctionFactory & factory)
 {
     factory.registerFunction<FunctionDictHas>();
+    factory.registerFunction<FunctionDictUpdate>();
     factory.registerFunction<FunctionDictGetUInt8>();
     factory.registerFunction<FunctionDictGetUInt16>();
     factory.registerFunction<FunctionDictGetUInt32>();
@@ -46,3 +47,4 @@ void registerFunctionsExternalDictionaries(FunctionFactory & factory)
 }
 
 }
+

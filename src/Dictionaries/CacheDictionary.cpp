@@ -359,6 +359,37 @@ ColumnUInt8::Ptr CacheDictionary<dictionary_key_type>::hasKeys(const Columns & k
 }
 
 template <DictionaryKeyType dictionary_key_type>
+ColumnUInt8::Ptr CacheDictionary<dictionary_key_type>::updateKeys(const Columns & key_columns, const DataTypes & key_types) const
+{
+    if (dictionary_key_type == DictionaryKeyType::Complex)
+        dict_struct.validateKeyTypes(key_types);
+
+    DictionaryKeysArenaHolder<dictionary_key_type> arena_holder;
+    DictionaryKeysExtractor<dictionary_key_type> extractor(key_columns, arena_holder.getComplexKeyArena());
+    const auto keys = extractor.extractAllKeys();
+
+    /// We make empty request just to fetch if keys exists
+    DictionaryStorageFetchRequest request(dict_struct, {}, {}, {});
+
+    size_t keys_size = keys.size();
+
+    PaddedPODArray<KeyState> key_index_to_state(keys_size);
+    for (size_t j = 0; j < keys_size; ++j) {
+        key_index_to_state[j] = KeyState::expired;
+    }
+
+    size_t keys_to_update_size = keys_size;
+    auto update_unit = std::make_shared<CacheDictionaryUpdateUnit<dictionary_key_type>>(key_columns, key_index_to_state, request, keys_to_update_size);
+
+    /// Start async update.
+    update_queue.tryPushToUpdateQueueOrThrow(update_unit);
+
+    auto result = ColumnUInt8::create(keys_size, false);
+
+    return result;
+}
+
+template <DictionaryKeyType dictionary_key_type>
 ColumnPtr CacheDictionary<dictionary_key_type>::getHierarchy(
     ColumnPtr key_column [[maybe_unused]],
     const DataTypePtr & key_type [[maybe_unused]]) const

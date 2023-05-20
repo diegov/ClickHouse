@@ -207,6 +207,15 @@ public:
         const Columns & key_columns,
         const DataTypes & key_types) const = 0;
 
+    virtual ColumnUInt8::Ptr updateKeys(
+        const Columns & key_columns [[maybe_unused]],
+        const DataTypes & key_types [[maybe_unused]]) const
+    {
+        throw Exception(ErrorCodes::NOT_IMPLEMENTED,
+                        "Method updateKeys is not supported for {} dictionary.",
+                        getDictionaryID().getNameForLogs());
+    }
+
     virtual bool hasHierarchy() const { return false; }
 
     virtual ColumnPtr getHierarchy(

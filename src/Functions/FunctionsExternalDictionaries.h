@@ -292,6 +292,152 @@ private:
     mutable FunctionDictHelper helper;
 };
 
+class FunctionDictUpdate final : public IFunction
+{
+public:
+    static constexpr auto name = "dictUpdate";
+
+    static FunctionPtr create(ContextPtr context)
+    {
+        return std::make_shared<FunctionDictUpdate>(context);
+    }
+
+    explicit FunctionDictUpdate(ContextPtr context_) : helper(context_) {}
+
+    String getName() const override { return name; }
+
+    size_t getNumberOfArguments() const override { return 0; }
+
+    bool isVariadic() const override { return true; }
+
+    bool isDeterministic() const override { return false; }
+
+    bool isSuitableForShortCircuitArgumentsExecution(const DataTypesWithConstInfo & /*arguments*/) const override { return true; }
+
+    bool useDefaultImplementationForConstants() const final { return true; }
+
+    ColumnNumbers getArgumentsThatAreAlwaysConstant() const final { return {0}; }
+
+    DataTypePtr getReturnTypeImpl(const DataTypes & arguments) const override
+    {
+        if (arguments.size() < 2)
+            throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH,
+                "Wrong argument count for function {}",
+                getName());
+
+        if (!isString(arguments[0]))
+            throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
+                "Illegal type {} of first argument of function, expected a string",
+                arguments[0]->getName(),
+                getName());
+
+        return std::make_shared<DataTypeUInt8>();
+    }
+
+    ColumnPtr executeImpl(const ColumnsWithTypeAndName & arguments, const DataTypePtr & result_type, size_t input_rows_count) const override
+    {
+        /** Do not require existence of the dictionary if the function is called for empty columns.
+          * This is needed to allow successful query analysis on a server,
+          *  that is the initiator of a distributed query,
+          *  in the case when the function will be invoked for real data only at the remote servers.
+          * This feature is controversial and implemented specially
+          *  for backward compatibility with the case in Yandex Banner System.
+          */
+        if (input_rows_count == 0)
+            return result_type->createColumn();
+
+        String dictionary_name;
+
+        if (const auto * name_col = checkAndGetColumnConst<ColumnString>(arguments[0].column.get()))
+            dictionary_name = name_col->getValue<String>();
+        else
+            throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
+                "Illegal type {} of first argument of function {}, expected a const string.",
+                arguments[0].type->getName(),
+                getName());
+
+        auto dictionary = helper.getDictionary(dictionary_name);
+        auto dictionary_key_type = dictionary->getKeyType();
+        auto dictionary_special_key_type = dictionary->getSpecialKeyType();
+
+        const auto & key_column_with_type = arguments[1];
+        auto key_column = key_column_with_type.column;
+        auto key_column_type = key_column_with_type.type;
+
+        ColumnPtr range_col;
+        DataTypePtr range_col_type;
+
+        if (dictionary_special_key_type == DictionarySpecialKeyType::Range)
+        {
+            if (arguments.size() != 3)
+                throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH,
+                    "Wrong argument count for function {} when dictionary has key type range",
+                    getName());
+
+            range_col = arguments[2].column;
+            range_col_type = arguments[2].type;
+
+            if (!(range_col_type->isValueRepresentedByInteger() && range_col_type->getSizeOfValueInMemory() <= sizeof(Int64)))
+                throw Exception(ErrorCodes::ILLEGAL_COLUMN,
+                    "Illegal type {} of fourth argument of function {} must be convertible to Int64.",
+                    range_col_type->getName(),
+                    getName());
+        }
+
+        Columns key_columns;
+        DataTypes key_types;
+
+        if (dictionary_key_type == DictionaryKeyType::Simple)
+        {
+            key_columns = {key_column};
+            key_types = {key_column_with_type.type};
+        }
+        else if (dictionary_key_type == DictionaryKeyType::Complex)
+        {
+            /// Functions in external dictionaries_loader only support full-value (not constant) columns with keys.
+            key_column = key_column->convertToFullColumnIfConst();
+
+            if (isTuple(key_column_type))
+            {
+                key_columns = assert_cast<const ColumnTuple &>(*key_column).getColumnsCopy();
+                key_types = assert_cast<const DataTypeTuple &>(*key_column_type).getElements();
+            }
+            else
+            {
+                size_t keys_size = dictionary->getStructure().getKeysSize();
+
+                if (keys_size > 1)
+                {
+                    throw Exception(
+                        ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
+                        "Third argument of function {} must be tuple when dictionary is complex and key contains more than 1 attribute."
+                        "Actual type {}.",
+                        getName(),
+                        key_column_type->getName());
+                }
+                else
+                {
+                    key_columns = {key_column};
+                    key_types = {key_column_type};
+                }
+            }
+        }
+
+        dictionary->convertKeyColumns(key_columns, key_types);
+
+        if (dictionary_special_key_type == DictionarySpecialKeyType::Range)
+        {
+            key_columns.emplace_back(range_col);
+            key_types.emplace_back(range_col_type);
+        }
+
+        return dictionary->updateKeys(key_columns, key_types);
+    }
+
+private:
+    mutable FunctionDictHelper helper;
+};
+
 enum class DictionaryGetFunctionType
 {
     get,

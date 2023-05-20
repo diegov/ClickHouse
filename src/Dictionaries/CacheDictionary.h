@@ -135,6 +135,7 @@ public:
         const Columns & default_values_columns) const override;
 
     ColumnUInt8::Ptr hasKeys(const Columns & key_columns, const DataTypes & key_types) const override;
+    ColumnUInt8::Ptr updateKeys(const Columns & key_columns, const DataTypes & key_types) const override;
 
     Pipe read(const Names & column_names, size_t max_block_size, size_t num_streams) const override;
 
