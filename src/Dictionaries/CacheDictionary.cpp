@@ -368,14 +368,20 @@ ColumnUInt8::Ptr CacheDictionary<dictionary_key_type>::updateKeys(const Columns 
     DictionaryKeysExtractor<dictionary_key_type> extractor(key_columns, arena_holder.getComplexKeyArena());
     const auto keys = extractor.extractAllKeys();
 
-    /// We make empty request just to fetch if keys exists
     DictionaryStorageFetchRequest request(dict_struct, {}, {}, {});
 
     size_t keys_size = keys.size();
 
     PaddedPODArray<KeyState> key_index_to_state(keys_size);
     for (size_t j = 0; j < keys_size; ++j) {
-        key_index_to_state[j] = KeyState::expired;
+        /// This is not accurate, but I assume the update job has no guarantees that it is for
+        /// any dictionary update scenarios, since eg. two updates for the same key might be
+        /// enqueued with KeyState::not_found, but by the time the second one is processed the
+        /// key will have already been fetched.
+        /// The opposite scenario, expired at time of request, but with the key no longer
+        /// present in cache at time of update, could also be true due to eviction.
+        /// TODO: Still though, this needs to be verified.
+        key_index_to_state[j] = KeyState::not_found;
     }
 
     size_t keys_to_update_size = keys_size;
@@ -384,6 +390,10 @@ ColumnUInt8::Ptr CacheDictionary<dictionary_key_type>::updateKeys(const Columns 
     /// Start async update.
     update_queue.tryPushToUpdateQueueOrThrow(update_unit);
 
+    /// TODO: What should we return? If we want to return something meaningful, we have to do
+    /// work similar to `dictHas`, fetching the keys. and maybe return whether they keys
+    /// existed and were expired. But that's probably a lot more expensive than just
+    /// enqueueing the updates, and might not be needed by the caller.
     auto result = ColumnUInt8::create(keys_size, false);
 
     return result;
